@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
-  <script defer src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
     :root { --bg: #000; --card: #111; --gold: #F59E0B; --text: #FFF; --muted:#aaa; --green:#10B981; --red:#ef4444; }
     * { box-sizing: border-box; }
@@ -151,7 +151,7 @@
   let operacionEnCurso = false;
   let idPendiente = null;
 
-  window.addEventListener('DOMContentLoaded', () => {
+  window.addEventListener('load', () => {
     const parametros = new URLSearchParams(window.location.search);
     const idURL = parametros.get('id');
     if (idURL) {
@@ -197,11 +197,11 @@
     document.getElementById('pantallaAcciones').classList.toggle('hidden', nombre !== 'acciones');
   }
 
-  async function llamarAPI(params) {
+  async function llamarAPI(params, mostrarIndicador = true) {
     if (!apiConfigurada()) {
       return { exito:false, mensaje:'Falta configurar API_URL con la URL real de tu implementación de Google Apps Script.' };
     }
-    mostrarLoader(true);
+    if (mostrarIndicador) mostrarLoader(true);
     try {
       const url = new URL(API_URL);
       url.searchParams.set('api', 'true');
@@ -217,7 +217,7 @@
       const mensaje = error && error.message ? error.message : 'No se pudo conectar con Apps Script.';
       return { exito:false, mensaje:'Error de conexión con Apps Script: ' + mensaje };
     } finally {
-      mostrarLoader(false);
+      if (mostrarIndicador) mostrarLoader(false);
     }
   }
 
@@ -333,33 +333,45 @@
       return;
     }
     procesandoQR = true; // Evita múltiples lecturas del mismo QR en fotogramas consecutivos.
-    await detenerEscaner();
-    await cargarCliente(id);
+    // La detención de cámara y la consulta al servidor ocurren en paralelo.
+    const paradaCamara = detenerEscaner();
+    await cargarCliente(id, paradaCamara);
   }
 
   async function buscarManual() {
     if (!pinActual) { mostrarPantalla('login'); return; }
     const consulta = document.getElementById('txtBuscar').value.trim();
     if (!consulta) { alert('Ingresa el ID del cliente o su número de celular.'); return; }
-    await detenerEscaner();
 
+    // Se inicia la detención de cámara sin bloquear la búsqueda.
+    const paradaCamara = detenerEscaner();
     const id = extraerId(consulta);
     if (id) {
-      await cargarCliente(id);
+      await cargarCliente(id, paradaCamara);
       return;
     }
 
-    // Una sola ida al servidor resuelve el celular y devuelve también la ficha completa.
-    const res = await llamarAPI({ accion:'buscarEstadoCliente', busqueda:consulta, pin:pinActual });
-    if (!res || !res.exito || !res.cliente) {
-      alert((res && res.mensaje) || 'No se encontró al cliente.');
+    // Para celular: localizar y traer la ficha completa en una sola petición al Apps Script.
+    mostrarPantalla('espera');
+    try {
+      const inicioBusqueda = performance.now();
+      const solicitud = llamarAPI({ accion:'buscarYObtenerEstadoRapido', busqueda:consulta, pin:pinActual });
+      const resultados = await Promise.all([solicitud, paradaCamara]);
+      const res = resultados[0];
+      registrarTiempoBusqueda('celular', inicioBusqueda, res);
+      if (!res || !res.exito) {
+        alert((res && res.mensaje) || 'No se encontró al cliente.');
+        mostrarPantalla('espera');
+        return;
+      }
+      procesarEstadoCliente(res, consulta);
+    } catch (error) {
+      alert('No se pudo buscar al cliente. ' + (error && error.message ? error.message : ''));
       mostrarPantalla('espera');
-      return;
     }
-    mostrarEstadoCliente(res, null);
   }
 
-  async function cargarCliente(id) {
+  async function cargarCliente(id, promesaDetencionCamara=null) {
     if (!pinActual) { mostrarPantalla('login'); return; }
     const idLimpio = extraerId(id);
     if (!idLimpio) {
@@ -367,21 +379,22 @@
       await volverAEscanear(false);
       return;
     }
+
     mostrarPantalla('espera');
-    mostrarLoader(true, 'Buscando cliente…');
     try {
-      const res = await llamarAPI({ accion:'obtenerEstado', id:idLimpio, pin:pinActual });
-      if (!res || !res.exito || !res.cliente) {
+      const inicioBusqueda = performance.now();
+      const solicitud = llamarAPI({ accion:'obtenerEstadoRapido', id:idLimpio, pin:pinActual });
+      const resultados = promesaDetencionCamara
+        ? await Promise.all([solicitud, promesaDetencionCamara])
+        : [await solicitud];
+      const res = resultados[0];
+      registrarTiempoBusqueda('QR/ID', inicioBusqueda, res);
+      if (!res || !res.exito) {
         alert((res && res.mensaje) || 'Cliente no encontrado.');
         await volverAEscanear(camaraAutorizada);
         return;
       }
-      if (!res.saldos || !Number.isFinite(Number(res.saldos.cerveza)) || !Number.isFinite(Number(res.saldos.menu))) {
-        alert('La API respondió, pero falta saldos.cerveza o saldos.menu. Revisa el formato de la respuesta en Code.gs.');
-        await volverAEscanear(camaraAutorizada);
-        return;
-      }
-      mostrarEstadoCliente(res, idLimpio);
+      procesarEstadoCliente(res, idLimpio);
     } catch (error) {
       alert('No se pudo cargar el cliente. ' + (error.message || ''));
       await volverAEscanear(camaraAutorizada);
@@ -390,15 +403,52 @@
     }
   }
 
-  function mostrarEstadoCliente(res, idFallback) {
-    if (!res || !res.cliente || !res.saldos) return;
+  function procesarEstadoCliente(res, idFallback) {
+    if (!res.cliente || !res.saldos || !Number.isFinite(Number(res.saldos.cerveza)) || !Number.isFinite(Number(res.saldos.menu))) {
+      alert('La API respondió, pero falta cliente.nombre o saldos.cerveza/saldos.menu. Revisa el formato de Code.gs.');
+      mostrarPantalla('espera');
+      return;
+    }
     idCliente = res.cliente.id || res.cliente.idCliente || idFallback;
     document.getElementById('lblNombre').textContent = String(res.cliente.nombre || 'Cliente POSOQO');
     actualizarSaldos(res.saldos);
     mostrarAvisosCliente(res.cliente, Number(res.saldos.menu) || 0);
-    actualizarPanelCafeAdmin(res.cafe || null);
     mostrarPantalla('acciones');
     document.getElementById('txtBuscar').value = '';
+
+    // El cliente ya está visible. La tarjeta de café no bloquea la carga principal.
+    mostrarCafeCargando();
+    cargarCafeEnSegundoPlano(idCliente);
+  }
+
+  function registrarTiempoBusqueda(origen, inicio, respuesta) {
+    const total = Math.round(performance.now() - inicio);
+    const servidor = respuesta && Number.isFinite(Number(respuesta._msServidor))
+      ? Number(respuesta._msServidor) + ' ms' : 'no informado';
+    console.info('[POSOQO] Búsqueda ' + origen + ': ' + total + ' ms total; servidor: ' + servidor);
+  }
+
+  function mostrarCafeCargando() {
+    const estado = document.getElementById('cafeAdminEstado');
+    const detalle = document.getElementById('cafeAdminDetalle');
+    const btnActivar = document.getElementById('btnActivarSuscripcionCafe');
+    const btnCafe = document.getElementById('btnRegistrarCafeHoy');
+    if (estado) { estado.className = 'cafe-admin-status'; estado.textContent = 'Consultando tarjeta de café…'; }
+    if (detalle) detalle.textContent = 'La información principal del cliente ya está disponible.';
+    if (btnActivar) btnActivar.classList.add('hidden');
+    if (btnCafe) btnCafe.classList.add('hidden');
+  }
+
+  async function cargarCafeEnSegundoPlano(idBuscado) {
+    try {
+      const res = await llamarAPI({ accion:'obtenerEstadoCafe', id:idBuscado, pin:pinActual }, false);
+      // Evita que la respuesta atrasada de un cliente sobrescriba la ficha del siguiente.
+      if (idCliente !== idBuscado) return;
+      if (res && res.exito) actualizarPanelCafeAdmin(res.cafe || null);
+      else actualizarPanelCafeAdmin(null);
+    } catch (_) {
+      if (idCliente === idBuscado) actualizarPanelCafeAdmin(null);
+    }
   }
 
   function fechaCafeCorta(valor) {
@@ -452,8 +502,9 @@
 
   async function actualizarEstadoCafeActual() {
     if (!idCliente) return;
-    const res = await llamarAPI({ accion:'obtenerEstado', id:idCliente, pin:pinActual });
-    if (res && res.exito) actualizarPanelCafeAdmin(res.cafe || null);
+    const idBuscado = idCliente;
+    const res = await llamarAPI({ accion:'obtenerEstadoCafe', id:idBuscado, pin:pinActual }, false);
+    if (idCliente === idBuscado && res && res.exito) actualizarPanelCafeAdmin(res.cafe || null);
   }
 
   async function activarSuscripcionCafe() {
