@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script defer src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
     :root { --bg: #000; --card: #111; --gold: #F59E0B; --text: #FFF; --muted:#aaa; --green:#10B981; --red:#ef4444; }
     * { box-sizing: border-box; }
@@ -151,7 +151,7 @@
   let operacionEnCurso = false;
   let idPendiente = null;
 
-  window.addEventListener('load', () => {
+  window.addEventListener('DOMContentLoaded', () => {
     const parametros = new URLSearchParams(window.location.search);
     const idURL = parametros.get('id');
     if (idURL) {
@@ -349,13 +349,14 @@
       return;
     }
 
-    const res = await llamarAPI({ accion:'buscarCliente', busqueda:consulta, pin:pinActual });
-    if (!res || !res.exito || !res.id) {
+    // Una sola ida al servidor resuelve el celular y devuelve también la ficha completa.
+    const res = await llamarAPI({ accion:'buscarEstadoCliente', busqueda:consulta, pin:pinActual });
+    if (!res || !res.exito || !res.cliente) {
       alert((res && res.mensaje) || 'No se encontró al cliente.');
       mostrarPantalla('espera');
       return;
     }
-    await cargarCliente(res.id);
+    mostrarEstadoCliente(res, null);
   }
 
   async function cargarCliente(id) {
@@ -370,30 +371,34 @@
     mostrarLoader(true, 'Buscando cliente…');
     try {
       const res = await llamarAPI({ accion:'obtenerEstado', id:idLimpio, pin:pinActual });
-      if (!res || !res.exito) {
+      if (!res || !res.exito || !res.cliente) {
         alert((res && res.mensaje) || 'Cliente no encontrado.');
         await volverAEscanear(camaraAutorizada);
         return;
       }
-      if (!res.cliente || !res.saldos || !Number.isFinite(Number(res.saldos.cerveza)) || !Number.isFinite(Number(res.saldos.menu))) {
-        alert('La API respondió, pero falta cliente.nombre o saldos.cerveza/saldos.menu. Revisa el formato de la respuesta en Code.gs.');
+      if (!res.saldos || !Number.isFinite(Number(res.saldos.cerveza)) || !Number.isFinite(Number(res.saldos.menu))) {
+        alert('La API respondió, pero falta saldos.cerveza o saldos.menu. Revisa el formato de la respuesta en Code.gs.');
         await volverAEscanear(camaraAutorizada);
         return;
       }
-      idCliente = res.cliente.id || res.cliente.idCliente || idLimpio;
-      const nombreCliente = String(res.cliente.nombre || 'Cliente POSOQO');
-      document.getElementById('lblNombre').textContent = nombreCliente;
-      actualizarSaldos(res.saldos);
-      mostrarAvisosCliente(res.cliente, Number(res.saldos.menu) || 0);
-      actualizarPanelCafeAdmin(res.cafe || null);
-      mostrarPantalla('acciones');
-      document.getElementById('txtBuscar').value = '';
+      mostrarEstadoCliente(res, idLimpio);
     } catch (error) {
       alert('No se pudo cargar el cliente. ' + (error.message || ''));
       await volverAEscanear(camaraAutorizada);
     } finally {
       mostrarLoader(false);
     }
+  }
+
+  function mostrarEstadoCliente(res, idFallback) {
+    if (!res || !res.cliente || !res.saldos) return;
+    idCliente = res.cliente.id || res.cliente.idCliente || idFallback;
+    document.getElementById('lblNombre').textContent = String(res.cliente.nombre || 'Cliente POSOQO');
+    actualizarSaldos(res.saldos);
+    mostrarAvisosCliente(res.cliente, Number(res.saldos.menu) || 0);
+    actualizarPanelCafeAdmin(res.cafe || null);
+    mostrarPantalla('acciones');
+    document.getElementById('txtBuscar').value = '';
   }
 
   function fechaCafeCorta(valor) {
