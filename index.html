@@ -129,7 +129,7 @@
       <p class="hint" style="margin-bottom:0">Incluye un café por día durante la vigencia. Los días no utilizados no se acumulan.</p>
     </div>
     <hr>
-    <button id="btnCanjearJarra" class="btn-green hidden" onclick="canjear('jarra')">Entregar jarra gratis</button>
+    <button id="btnCanjearchop" class="btn-green hidden" onclick="canjear('chop')">Entregar chop gratis</button>
     <button id="btnCanjearPiqueo" class="btn-green hidden" onclick="canjear('piqueo')">Entregar piqueo gratis</button>
     <button class="btn-outline" style="margin-top:10px" onclick="volver()">Escanear otro cliente</button>
   </div>
@@ -559,13 +559,13 @@
     const cerveza = Math.max(0, Number(saldos.cerveza) || 0);
     const menu = Math.max(0, Number(saldos.menu) || 0);
     saldosActuales = { cerveza, menu };
-    // Mantiene 9/9 visible mientras haya una jarra pendiente de canje.
+    // Mantiene 9/9 visible mientras haya una chop pendiente de canje.
     // Tras canjear, el backend descuenta 9 y el siguiente avance se muestra normalmente.
     const avanceCerveza = Math.min(cerveza, 9);
     document.getElementById('statCerveza').textContent = `${avanceCerveza}/9`;
     const avanceMenu = (menu > 0 && menu % 24 === 0) ? 24 : menu % 24;
     document.getElementById('statMenu').textContent = `${avanceMenu}/24`;
-    document.getElementById('btnCanjearJarra').classList.toggle('hidden', cerveza < 9);
+    document.getElementById('btnCanjearchop').classList.toggle('hidden', cerveza < 9);
     document.getElementById('btnCanjearPiqueo').classList.toggle('hidden', menu < 24);
     actualizarAvisoMenu(menu);
     return [6, 12, 18, 24].includes(avanceMenu + 1);
@@ -664,7 +664,7 @@
 
   async function canjear(tipo) {
     if (!idCliente || !pinActual || operacionEnCurso) return;
-    const nombrePremio = tipo === 'jarra' ? 'la jarra gratis' : 'el piqueo gratis';
+    const nombrePremio = tipo === 'chop' ? 'la chop gratis' : 'el piqueo gratis';
     if (!confirm(`¿Confirmas la entrega de ${nombrePremio} a ${document.getElementById('lblNombre').textContent}?`)) return;
     operacionEnCurso = true;
     bloquearAcciones(true);
